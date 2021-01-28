@@ -9,7 +9,9 @@ import "C"
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -58,14 +60,18 @@ type KVMExitIO struct {
 }
 
 func main() {
+	run(os.Stdout)
+}
+
+func run(com1Out io.Writer) {
 	code := []uint8{
-		0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
-		0x00, 0xd8, /* add %bl, %al */
-		0x04, '0', /* add $'0', %al */
-		0xee,       /* out %al, (%dx) */
-		0xb0, '\n', /* mov $'\n', %al */
-		0xee, /* out %al, (%dx) */
-		0xf4, /* hlt */
+		0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */ //set output port to 0x3f8 (COM1 port)
+		0x00, 0xd8, /* add %bl, %al */ //a + b
+		0x04, '0', /* add $'0', %al */ //shift to ascii value of numeric
+		0xee,       /* out %al, (%dx) */ //output character
+		0xb0, '\n', /* mov $'\n', %al */ //set al to new line character
+		0xee, /* out %al, (%dx) */ //output character
+		0xf4, /* hlt */            //halt cpu
 	}
 
 	kvm, err := syscall.Open("/dev/kvm", syscall.O_RDWR|syscall.O_CLOEXEC, 0)
@@ -127,7 +133,7 @@ func main() {
 		panic("MMap unexpectedly small")
 	}
 
-	runB, _ := syscall.Mmap(vcpu, 0, C.sizeof_struct_kvm_run, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	runB, _ := syscall.Mmap(vcpu, 0, mmapSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if runB == nil {
 		panic("failed to get run")
 	}
@@ -167,19 +173,20 @@ func main() {
 			log.Println("exit: HLT")
 			return
 		case ExitReasonIO:
-			//Type cast the union object in kvm_run struct
+			//Type cast the union object in kvm_run struct, why cgo no support unions!
 			exit := (*KVMExitIO)(unsafe.Pointer(&run.anon0[0]))
 			data := (*uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(&runB[0])) + uintptr(exit.dataOffset)))
 
-			handlePio(exit, data)
+			handlePio(exit, data, com1Out)
 			break
 		}
 	}
 }
 
-func handlePio(pio *KVMExitIO, data *uint64) {
+func handlePio(pio *KVMExitIO, data *uint64, com1Out io.Writer) {
 	if pio.port == 0x3f8 && pio.direction == C.KVM_EXIT_IO_OUT {
-		log.Printf("%x", data)
+		com1Out.Write([]byte(fmt.Sprintf("%c", rune(*data))))
+
 	}
 }
 
